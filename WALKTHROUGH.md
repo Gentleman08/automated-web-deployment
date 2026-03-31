@@ -27,6 +27,7 @@
 | 9   | Phase 5 - Automated Testing            | Batch 5 |
 | 10  | Phase 6 - Container Registry           | Batch 5 |
 | 11  | Phase 7 - Cloud Deployment (AWS)       | Batch 6 |
+| 11A | Phase 7 - Cloud Deployment (Azure)     | Batch 6 |
 | 12  | Phase 8 - Continuous Deployment        | Batch 6 |
 | 13  | Phase 9 - End-to-End Pipeline Demo     | Batch 7 |
 | 14  | Gotchas & Troubleshooting              | Batch 7 |
@@ -2766,6 +2767,285 @@ exit 1
 > - The `--restart unless-stopped` flag ensures the container restarts after EC2 reboot
 > - Log the deployment timestamp for debugging (when was this version deployed?)
 
+### 11A. Azure Alternative (Use This Instead of AWS)
+
+If you want to deploy this project on **Azure instead of AWS**, use this section as a
+drop-in replacement for Phase 7. The CI/CD flow stays the same:
+
+- GitHub Actions builds/tests
+- Docker image pushed to Docker Hub
+- GitHub Actions SSH deploys to a cloud VM
+
+Only the cloud provider changes from **AWS EC2** to **Azure Virtual Machine**.
+
+### 11A.1 AWS to Azure Service Mapping
+
+| AWS (Current Walkthrough) | Azure Equivalent                  | Notes                       |
+| ------------------------- | --------------------------------- | --------------------------- |
+| EC2 Instance              | Azure VM                          | Linux VM for running Docker |
+| Security Group            | NSG (Network Security Group)      | Inbound rules for 22/80/443 |
+| Elastic IP                | Static Public IP                  | Persistent public address   |
+| IAM User + Keys           | Azure AD + Service Principal/OIDC | For advanced automation     |
+| CloudWatch (future)       | Azure Monitor / Log Analytics     | Observability and alerting  |
+
+### 11A.2 Azure Architecture for This Project
+
+```
+  AZURE INFRASTRUCTURE LAYOUT
+  ============================
+
+  +=========================================================+
+  |  Azure Subscription                                     |
+  |                                                         |
+  |  Resource Group: rg-cicd-webapp                        |
+  |                                                         |
+  |  +-- Virtual Network (vnet-cicd) ---------------+      |
+  |  |                                               |      |
+  |  |  +-- Subnet (default) --------------------+   |      |   INTERNET
+  |  |  |                                         |  |      |      |
+  |  |  |  +-- Linux VM ----------------------+   |  |      |   +------+
+  |  |  |  |  Name: vm-cicd-webapp            |   |  |      +-->| NSG  |
+  |  |  |  |  Size: B1s/B2s                   |   |  |          | 22/80|
+  |  |  |  |  Docker installed                |   |  |          | /443 |
+  |  |  |  |                                  |   |  |          +------+
+  |  |  |  |  +-- Docker Container --------+  |   |  |             |
+  |  |  |  |  | cicd-webapp                |  |   |  |             |
+  |  |  |  |  | Port 3000 internal         |  |   |  |             |
+  |  |  |  |  +----------------------------+  |   |  |             |
+  |  |  |  +----------------------------------+   |  |             |
+  |  |  +-----------------------------------------+  |             |
+  |  +-----------------------------------------------+             |
+  |                                                         Public IP
+  +=========================================================+
+```
+
+### 11A.3 Prerequisites for Azure Deployment
+
+Install and verify Azure CLI:
+
+```bash
+# Download: https://learn.microsoft.com/cli/azure/install-azure-cli-windows
+az version
+
+# Login to Azure
+az login
+
+# (Optional) select subscription if you have multiple
+az account list --output table
+az account set --subscription "YOUR_SUBSCRIPTION_NAME_OR_ID"
+```
+
+> **GOTCHA: Azure Subscription Quotas**
+>
+> - Free trials and student subscriptions have tighter quotas
+> - Some VM sizes may be unavailable in certain regions
+> - If creation fails with quota errors, try another region or VM size
+
+### 11A.4 Create Azure VM + Network Resources (CLI)
+
+Run these commands from your local machine:
+
+```bash
+# ---------- Configuration ----------
+RESOURCE_GROUP="rg-cicd-webapp"
+LOCATION="eastus"
+VM_NAME="vm-cicd-webapp"
+ADMIN_USER="azureuser"
+NSG_NAME="nsg-cicd-webapp"
+PUBLIC_IP_NAME="pip-cicd-webapp"
+
+# ---------- Create Resource Group ----------
+az group create \
+  --name "$RESOURCE_GROUP" \
+  --location "$LOCATION"
+
+# ---------- Create VM ----------
+# Ubuntu 22.04 LTS + SSH key auth
+az vm create \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$VM_NAME" \
+  --image Ubuntu2204 \
+  --size Standard_B1s \
+  --admin-username "$ADMIN_USER" \
+  --authentication-type ssh \
+  --generate-ssh-keys \
+  --public-ip-sku Standard \
+  --nsg "$NSG_NAME"
+
+# ---------- Open required ports ----------
+az vm open-port --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --port 80
+az vm open-port --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --port 443
+az vm open-port --resource-group "$RESOURCE_GROUP" --name "$VM_NAME" --port 22
+
+# ---------- Get public IP ----------
+az vm list-ip-addresses \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$VM_NAME" \
+  --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" \
+  -o tsv
+```
+
+> **GOTCHA: SSH Port Exposure in Azure**
+>
+> - For learning projects, opening port 22 is acceptable with key-only auth
+> - For production, restrict source IPs in NSG rules
+> - Azure Bastion is a safer long-term option (no public SSH exposure)
+
+### 11A.5 Configure Docker on Azure VM
+
+SSH into the VM and install Docker:
+
+```bash
+# Replace with your actual public IP
+ssh azureuser@YOUR_AZURE_VM_PUBLIC_IP
+
+# ============================================
+# Run these commands ON THE AZURE VM
+# ============================================
+
+sudo apt-get update -y
+sudo apt-get install -y ca-certificates curl gnupg
+
+# Install Docker Engine using Ubuntu repo
+sudo apt-get install -y docker.io
+
+# Start and enable Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Allow non-root Docker commands
+sudo usermod -aG docker azureuser
+
+# Apply group change
+newgrp docker
+
+# Verify Docker
+docker --version
+docker run hello-world
+```
+
+### 11A.6 Test Manual Deployment to Azure VM
+
+```bash
+# ON AZURE VM:
+
+# Pull image from Docker Hub
+docker pull YOUR_DOCKERHUB_USERNAME/cicd-webapp:latest
+
+# Run container
+docker run -d \
+  --name cicd-webapp \
+  --restart unless-stopped \
+  -p 80:3000 \
+  -e NODE_ENV=production \
+  YOUR_DOCKERHUB_USERNAME/cicd-webapp:latest
+
+# Verify container is running
+docker ps
+
+# Local VM check
+curl http://localhost/health
+
+# External check
+# Open: http://YOUR_AZURE_VM_PUBLIC_IP
+```
+
+### 11A.7 GitHub Secrets for Azure Deployment
+
+Use these repository secrets (instead of EC2 values):
+
+| Secret Name          | Value                                                        |
+| -------------------- | ------------------------------------------------------------ |
+| `DOCKERHUB_USERNAME` | Docker Hub username                                          |
+| `DOCKERHUB_TOKEN`    | Docker Hub access token                                      |
+| `AZURE_VM_SSH_KEY`   | Contents of your private SSH key (`~/.ssh/id_rsa` or custom) |
+| `AZURE_VM_HOST`      | Azure VM public IP or DNS                                    |
+| `AZURE_VM_USER`      | `azureuser` (or your custom VM username)                     |
+
+> **Workflow Tip:** In your deploy job, replace `EC2_*` secret references with
+> `AZURE_VM_*` and keep the deployment script logic the same.
+
+### 11A.8 Azure Deployment Script (deploy-azure.sh)
+
+```bash
+#!/bin/bash
+# deploy-azure.sh - Deployment script for Azure VM
+
+set -euo pipefail
+
+IMAGE_NAME="${DOCKER_IMAGE:-your-username/cicd-webapp}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
+CONTAINER_NAME="cicd-webapp"
+HOST_PORT=80
+CONTAINER_PORT=3000
+
+echo "========================================"
+echo "  Azure Deployment Started"
+echo "  Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+echo "  Time: $(date)"
+echo "========================================"
+
+echo "[1/5] Pulling latest image..."
+docker pull "${IMAGE_NAME}:${IMAGE_TAG}"
+
+echo "[2/5] Stopping existing container..."
+docker stop "${CONTAINER_NAME}" 2>/dev/null || echo "No container to stop"
+
+echo "[3/5] Removing old container..."
+docker rm "${CONTAINER_NAME}" 2>/dev/null || echo "No container to remove"
+
+echo "[4/5] Starting new container..."
+docker run -d \
+  --name "${CONTAINER_NAME}" \
+  --restart unless-stopped \
+  -p "${HOST_PORT}:${CONTAINER_PORT}" \
+  -e NODE_ENV=production \
+  "${IMAGE_NAME}:${IMAGE_TAG}"
+
+echo "[5/5] Running health check..."
+sleep 5
+
+MAX_RETRIES=6
+RETRY_INTERVAL=5
+
+for i in $(seq 1 $MAX_RETRIES); do
+  if curl -sf "http://localhost:${HOST_PORT}/health" > /dev/null 2>&1; then
+    echo ""
+    echo "========================================"
+    echo "  Azure Deployment Successful!"
+    echo "  Health check passed on attempt ${i}"
+    echo "========================================"
+    docker image prune -af --filter "until=72h" 2>/dev/null || true
+    exit 0
+  fi
+  echo "Health check attempt ${i}/${MAX_RETRIES} failed, retrying in ${RETRY_INTERVAL}s..."
+  sleep $RETRY_INTERVAL
+done
+
+echo "========================================"
+echo "  AZURE DEPLOYMENT FAILED!"
+echo "========================================"
+docker logs "${CONTAINER_NAME}"
+exit 1
+```
+
+### 11A.9 Azure-Specific Troubleshooting
+
+| Issue                              | Likely Cause                          | Fix                                           |
+| ---------------------------------- | ------------------------------------- | --------------------------------------------- |
+| SSH timeout                        | NSG rule missing for port 22          | Add inbound 22 rule or use Azure Bastion      |
+| Web app not reachable on port 80   | NSG denies HTTP                       | Ensure inbound port 80 is allowed             |
+| Docker permission denied           | User not in docker group              | `sudo usermod -aG docker azureuser`, re-login |
+| VM IP changed                      | Dynamic public IP used                | Switch to static public IP resource           |
+| High unexpected cost               | VM left running continuously          | Stop/deallocate VM when idle                  |
+| Deployment works locally, fails CI | Wrong secret names in GitHub workflow | Use consistent `AZURE_VM_*` secret names      |
+
+> **GOTCHA: Azure Cost Control**
+>
+> - Stopping a VM from inside OS is not always enough; use Azure "Stop (deallocate)"
+> - Managed disks and static public IPs can incur cost even when VM is deallocated
+> - Set a budget alert in Cost Management at the start of the project
+
 ---
 
 ## 12. Phase 8 — Continuous Deployment (Tying It All Together)
@@ -2826,6 +3106,10 @@ exit 1
   +---------------------------------------+
 ```
 
+> **Azure Alternative Note:** If you are following Section 11A, replace "EC2" in this
+> flow with "Azure VM". The deploy mechanics are identical (SSH + docker pull/run), only
+> cloud resource names and secret names change.
+
 ### 12.2 Adding GitHub Secrets for CI/CD
 
 Before the pipeline can deploy, ensure all secrets are configured:
@@ -2855,6 +3139,14 @@ Before the pipeline can deploy, ensure all secrets are configured:
   |                         | ubuntu (Ubuntu AMI)                  |
   +-------------------------+--------------------------------------+
 ```
+
+If you deploy to Azure VM instead of EC2, use:
+
+- `AZURE_VM_SSH_KEY`
+- `AZURE_VM_HOST`
+- `AZURE_VM_USER`
+
+and update your workflow secret references accordingly.
 
 ### 12.3 Enable CI/CD SSH Access
 

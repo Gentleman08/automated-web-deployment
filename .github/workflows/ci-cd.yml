@@ -1,0 +1,194 @@
+# .github/workflows/ci-cd.yml
+# Automated CI/CD Pipeline for Web Application Deployment
+
+name: CI/CD Pipeline
+
+# ============================================
+# TRIGGERS: When should this pipeline run?
+# ============================================
+on:
+  # Run on push to main branch
+  push:
+    branches: [main]
+
+  # Run on pull requests targeting main
+  pull_request:
+    branches: [main]
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+# ============================================
+# ENVIRONMENT VARIABLES (available to all jobs)
+# ============================================
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/cicd-webapp
+  NODE_VERSION: "20"
+
+# ============================================
+# JOBS: The work units of the pipeline
+# ============================================
+jobs:
+  # ------------------------------------------
+  # JOB 1: Build, Lint, and Test
+  # ------------------------------------------
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js environment
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm" # Cache npm dependencies for faster builds
+
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        run: npm ci
+        # npm ci = clean install from lockfile (faster, deterministic)
+
+      # Step 4: Run linter
+      - name: Run ESLint
+        run: npm run lint
+
+      # Step 5: Run tests with coverage
+      - name: Run tests
+        run: npm test
+
+      # Step 6: Upload test coverage as artifact
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always() # Upload even if tests fail
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  # ------------------------------------------
+  # JOB 2: Build and Push Docker Image
+  # ------------------------------------------
+  build-and-push-docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: build-and-test # Only run if tests pass
+
+    # Only build Docker image on push to main (not on PRs)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      # Step 1: Check out code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Docker Buildx (advanced builder)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Step 3: Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Step 4: Extract metadata (tags, labels)
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+            type=raw,value=${{ github.run_number }}
+
+      # Step 5: Build and push Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha # Use GitHub Actions cache
+          cache-to: type=gha,mode=max
+
+      # Step 6: Verify the pushed image
+      - name: Verify image
+        run: |
+          echo "Image pushed successfully!"
+          echo "Tags: ${{ steps.meta.outputs.tags }}"
+
+  # ------------------------------------------
+  # JOB 3: Deploy to AWS EC2
+  # ------------------------------------------
+  deploy-to-ec2:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push-docker # Only deploy if image was pushed
+
+    # Only deploy on push to main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      # Step 1: Deploy via SSH
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            echo "=== Deployment Started ==="
+            echo "Timestamp: $(date)"
+
+            # Login to Docker Hub
+            echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+
+            # Pull the latest image
+            docker pull ${{ env.DOCKER_IMAGE }}:latest
+
+            # Stop and remove old container (ignore error if not exists)
+            docker stop cicd-webapp 2>/dev/null || true
+            docker rm cicd-webapp 2>/dev/null || true
+
+            # Run new container
+            docker run -d \
+              --name cicd-webapp \
+              --restart unless-stopped \
+              -p 80:3000 \
+              -e NODE_ENV=production \
+              ${{ env.DOCKER_IMAGE }}:latest
+
+            # Wait for container to be healthy
+            echo "Waiting for health check..."
+            sleep 10
+
+            # Verify deployment
+            if curl -f http://localhost/health; then
+              echo ""
+              echo "=== Deployment Successful ==="
+            else
+              echo "=== DEPLOYMENT FAILED - Health check failed ==="
+              docker logs cicd-webapp
+              exit 1
+            fi
+
+            # Cleanup old images (keep last 3)
+            docker image prune -af --filter "until=72h"
+
+            echo "=== Deployment Complete ==="
+
+      # Step 2: Verify deployment from runner
+      - name: Verify deployment externally
+        run: |
+          echo "Waiting for deployment to stabilize..."
+          sleep 15
+          echo "Checking health endpoint..."
+          curl -f http://${{ secrets.EC2_HOST }}/health || echo "External check failed (may need security group update)"
