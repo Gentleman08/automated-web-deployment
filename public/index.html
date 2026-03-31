@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CI/CD Web Application</title>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Automated CI/CD Web Application</h1>
+            <p class="subtitle">Deployed via GitHub Actions + Docker + AWS</p>
+        </header>
+
+        <main>
+            <section class="status-card">
+                <h2>Deployment Status</h2>
+                <div id="health-status">Loading...</div>
+            </section>
+
+            <section class="info-card">
+                <h2>Pipeline Info</h2>
+                <ul>
+                    <li><strong>Source Control:</strong> GitHub</li>
+                    <li><strong>CI/CD Engine:</strong> GitHub Actions</li>
+                    <li><strong>Container:</strong> Docker</li>
+                    <li><strong>Registry:</strong> Docker Hub</li>
+                    <li><strong>Deployment:</strong> AWS EC2</li>
+                </ul>
+            </section>
+
+            <section class="endpoints-card">
+                <h2>API Endpoints</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Path</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>GET</td>
+                            <td>/</td>
+                            <td>Home (this page)</td>
+                        </tr>
+                        <tr>
+                            <td>GET</td>
+                            <td>/api/info</td>
+                            <td>Application info</td>
+                        </tr>
+                        <tr>
+                            <td>GET</td>
+                            <td>/health</td>
+                            <td>Health check</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+        </main>
+
+        <footer>
+            <p>Automated CI/CD Pipeline Project &copy; 2026</p>
+        </footer>
+    </div>
+
+    <script>
+        // Fetch health status on load
+        fetch("/health")
+            .then((res) => res.json())
+            .then((data) => {
+                document.getElementById("health-status").innerHTML = `
+          <p class="status-ok">&#10003; ${data.status.toUpperCase()}</p>
+          <p>Version: ${data.version}</p>
+          <p>Environment: ${data.environment}</p>
+          <p>Uptime: ${Math.floor(data.uptime)}s</p>
+        `;
+            })
+            .catch((err) => {
+                document.getElementById("health-status").innerHTML =
+                    '<p class="status-error">&#10007; Unable to reach health endpoint</p>';
+            });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,21 @@
+# .dockerignore
+# Files/folders excluded from the Docker build context
+# This makes docker build faster and images smaller
+
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.github
+.env
+.env.*
+docker-compose*.yml
+Dockerfile
+.dockerignore
+README.md
+WALKTHROUGH.md
+tests/
+coverage/
+.eslintrc.json
+.vscode
+*.md

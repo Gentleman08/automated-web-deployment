@@ -1,2 +1,39 @@
+#AI Generated records 
 build_walkthrough.bat
 state.txt
+
+# Dependencies
+node_modules/
+
+
+# Environment files (NEVER commit secrets)
+.env
+.env.local
+.env.production
+
+# Build output
+dist/
+build/
+coverage/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
+
+# AWS
+.aws/
