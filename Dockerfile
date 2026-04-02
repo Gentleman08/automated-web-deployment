@@ -59,6 +59,7 @@ COPY src/ ./src/
 COPY public/ ./public/
 
 # Switch to non-root user
+
 USER appuser
 
 # Set production environment variables
