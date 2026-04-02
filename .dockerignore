@@ -1,0 +1,51 @@
+# Dependencies (installed fresh inside the container)
+node_modules/
+
+# Environment files (secrets must NEVER be baked into images)
+.env
+.env.local
+.env.production
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD & GitHub
+.github/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts & coverage
+coverage/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Docker (don't copy Docker config into the image)
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml
+.dockerignore
+
+# Project docs & scripts (not needed at runtime)
+README.md
+WALKTHROUGH.md
+deploy.sh
+build_walkthrough.bat
+state.txt
+.eslintrc.json
+
+# Tests (copied in builder stage but excluded from production stage)
+tests/
