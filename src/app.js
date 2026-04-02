@@ -26,8 +26,8 @@ app.use("/health", healthRoutes);
 const errorHandler = require("./middleware/errorHandler");
 app.use(errorHandler);
 
-// Start server (only if not in test mode)
-if (process.env.NODE_ENV !== "test") {
+// Start server only when run directly (not imported by tests)
+if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`
     ========================================

@@ -4,7 +4,6 @@ state.txt
 
 # Dependencies
 node_modules/
-package-lock.json
 
 # Environment files (NEVER commit secrets)
 .env
