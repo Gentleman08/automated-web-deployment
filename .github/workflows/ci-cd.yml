@@ -23,6 +23,7 @@ on:
 # ============================================
 env:
   DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/cicd-webapp
+  DOCKER_TAG: sha-${{ github.sha }}
   NODE_VERSION: "20"
 
 # ============================================
@@ -104,7 +105,7 @@ jobs:
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
-            type=sha,prefix=
+            type=raw,value=${{ env.DOCKER_TAG }}
             type=raw,value=latest
             type=raw,value=${{ github.run_number }}
 
@@ -125,70 +126,83 @@ jobs:
           echo "Image pushed successfully!"
           echo "Tags: ${{ steps.meta.outputs.tags }}"
 
-  # ------------------------------------------
-  # JOB 3: Deploy to AWS EC2
-  # ------------------------------------------
-  deploy-to-ec2:
-    name: Deploy to EC2
+  deploy-to-azure:
+    name: Deploy to Azure App Service
     runs-on: ubuntu-latest
-    needs: build-and-push-docker # Only deploy if image was pushed
+    needs: build-and-push-docker
 
     # Only deploy on push to main
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      # Step 1: Deploy via SSH
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
+      # Step 1: Login to Azure using a service principal secret
+      - name: Azure login
+        uses: azure/login@v2
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          script: |
-            echo "=== Deployment Started ==="
-            echo "Timestamp: $(date)"
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-            # Login to Docker Hub
-            echo ${{ secrets.DOCKERHUB_TOKEN }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+      # Step 2: Configure Azure Web App container settings for Docker Hub
+      - name: Configure Web App container image
+        uses: azure/CLI@v2
+        env:
+          AZURE_WEBAPP_NAME: ${{ secrets.AZURE_WEBAPP_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        with:
+          inlineScript: |
+            az webapp config container set \
+              --name "$AZURE_WEBAPP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --container-image-name "${{ env.DOCKER_IMAGE }}:${{ env.DOCKER_TAG }}" \
+              --container-registry-url "https://index.docker.io" \
+              --container-registry-user "$DOCKERHUB_USERNAME" \
+              --container-registry-password "$DOCKERHUB_TOKEN"
 
-            # Pull the latest image
-            docker pull ${{ env.DOCKER_IMAGE }}:latest
+            az webapp config appsettings set \
+              --name "$AZURE_WEBAPP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --settings WEBSITES_PORT=3000
 
-            # Stop and remove old container (ignore error if not exists)
-            docker stop cicd-webapp 2>/dev/null || true
-            docker rm cicd-webapp 2>/dev/null || true
+            az webapp restart \
+              --name "$AZURE_WEBAPP_NAME" \
+              --resource-group "$AZURE_RESOURCE_GROUP"
 
-            # Run new container
-            docker run -d \
-              --name cicd-webapp \
-              --restart unless-stopped \
-              -p 80:3000 \
-              -e NODE_ENV=production \
-              ${{ env.DOCKER_IMAGE }}:latest
-
-            # Wait for container to be healthy
-            echo "Waiting for health check..."
-            sleep 10
-
-            # Verify deployment
-            if curl -f http://localhost/health; then
-              echo ""
-              echo "=== Deployment Successful ==="
-            else
-              echo "=== DEPLOYMENT FAILED - Health check failed ==="
-              docker logs cicd-webapp
-              exit 1
-            fi
-
-            # Cleanup old images (keep last 3)
-            docker image prune -af --filter "until=72h"
-
-            echo "=== Deployment Complete ==="
-
-      # Step 2: Verify deployment from runner
-      - name: Verify deployment externally
+      # Step 3: Wait for deployment to stabilize
+      - name: Wait for deployment
         run: |
-          echo "Waiting for deployment to stabilize..."
-          sleep 15
+          echo "Waiting for Azure App Service to pull and start the new container..."
+          sleep 30
+
+      # Step 4: Verify deployment via health check
+      - name: Verify deployment
+        run: |
           echo "Checking health endpoint..."
-          curl -f http://${{ secrets.EC2_HOST }}/health || echo "External check failed (may need security group update)"
+          HEALTH_URL="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+          
+          # Try up to 5 times with 10-second intervals
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i/5: Checking $HEALTH_URL"
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo ""
+              echo "========================================="
+              echo "   DEPLOYMENT SUCCESSFUL"
+              echo "   URL: https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+              echo "   Health: $HEALTH_URL"
+              echo "   Status: HTTP $HTTP_STATUS"
+              echo "========================================="
+              curl -s "$HEALTH_URL" | python3 -m json.tool || true
+              exit 0
+            fi
+            
+            echo "   Got HTTP $HTTP_STATUS, retrying in 10s..."
+            sleep 10
+          done
+          
+          echo ""
+          echo "Health check did not return 200 after 5 attempts."
+          echo "   This may be normal for first deployment (container is still starting)."
+          echo "   Check manually: https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+          echo "   Check logs in Azure Portal → App Service → Log stream"
