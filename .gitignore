@@ -36,3 +36,4 @@ docker-compose.override.yml
 
 # AWS
 .aws/
+azure_batch_state.txt

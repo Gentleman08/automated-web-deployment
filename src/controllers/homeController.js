@@ -20,7 +20,7 @@ const getInfo = (req, res) => {
             framework: "Express.js",
             containerization: "Docker",
             ci_cd: "GitHub Actions",
-            deployment: "AWS EC2",
+            deployment: "Azure Appservice",
         },
         endpoints: [
             { method: "GET", path: "/", description: "Home page" },
